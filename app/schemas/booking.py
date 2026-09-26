@@ -13,7 +13,14 @@ class BookingStatus(str, Enum):
 
 
 class BookingCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{
+            "centre_id": 1,
+            "test_id": 2,
+            "appointment_at": "2026-10-01T10:30:00Z",
+        }]},
+    )
 
     centre_id: int = Field(gt=0)
     test_id: int = Field(gt=0)
@@ -32,7 +39,20 @@ class BookingCreate(BaseModel):
 
 
 class BookingRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={"examples": [{
+            "id": 101,
+            "centre_id": 1,
+            "centre_name": "Apollo Diagnostics",
+            "test_id": 2,
+            "test_name": "CBC",
+            "appointment_at": "2026-10-01T10:30:00Z",
+            "amount": "500.00",
+            "status": "PENDING",
+            "created_at": "2026-09-26T12:00:00Z",
+        }]},
+    )
 
     id: int
     centre_id: int

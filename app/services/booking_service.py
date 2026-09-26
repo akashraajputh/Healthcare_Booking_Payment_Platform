@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import logging
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -10,6 +11,8 @@ from app.models.centre import Centre
 from app.models.centre_test import CentreTest
 from app.models.test import DiagnosticTest
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 async def create_booking(session: AsyncSession, user: User, centre_id: int, test_id: int, appointment_at: datetime) -> Booking:
@@ -39,6 +42,10 @@ async def create_booking(session: AsyncSession, user: User, centre_id: int, test
     )
     session.add(booking)
     await session.commit()
+    logger.info(
+        "booking_created",
+        extra={"booking_id": booking.id, "user_id": user.id, "centre_id": centre_id, "test_id": test_id},
+    )
     booking = await get_owned_booking(session, booking.id, user.id)
     return booking
 

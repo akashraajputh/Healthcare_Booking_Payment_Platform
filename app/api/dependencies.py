@@ -1,6 +1,6 @@
 import jwt
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,11 +8,11 @@ from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
     unauthorized = HTTPException(
@@ -20,8 +20,10 @@ async def get_current_user(
         detail="Invalid or expired credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise unauthorized
     try:
-        user_id = decode_access_token(token)
+        user_id = decode_access_token(credentials.credentials)
     except (jwt.InvalidTokenError, ValueError):
         raise unauthorized from None
     user = await session.scalar(select(User).where(User.id == user_id, User.is_active.is_(True)))

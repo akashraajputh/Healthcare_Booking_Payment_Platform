@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import logging
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -12,6 +13,8 @@ from app.models.booking import Booking, BookingStatus
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
+
+logger = logging.getLogger(__name__)
 
 
 async def simulate_payment(session: AsyncSession, user: User, booking_id: int, outcome: PaymentStatus) -> Payment:
@@ -82,6 +85,13 @@ async def process_webhook(session: AsyncSession, event_id: str, event_type: str,
             event.processed_at = datetime.now(UTC)
             await session.flush()
         return {"status": "processed", "processed": True}
+    except HTTPException as exc:
+        logger.warning(
+            "payment_webhook_processing_failed",
+            extra={"event_id": event_id, "http_status": exc.status_code},
+        )
+        raise
     except IntegrityError:
         await session.rollback()
+        logger.error("payment_webhook_processing_failed", extra={"event_id": event_id, "http_status": 409})
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment conflicts with an existing payment") from None

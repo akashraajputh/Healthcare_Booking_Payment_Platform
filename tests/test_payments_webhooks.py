@@ -109,3 +109,56 @@ async def test_webhook_failure_and_validation(
         "booking_id": other_booking["id"], "amount": "1.00",
     })
     assert mismatch.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_invalid_booking_webhook_rolls_back_event(
+    client: AsyncClient,
+    test_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    response = await client.post("/payments/webhook/", json={
+        "event_id": "evt_unknown_booking_001",
+        "event_type": "payment.success",
+        "provider_payment_id": "pay_unknown_booking_001",
+        "booking_id": 999999,
+        "amount": "500.00",
+    })
+    assert response.status_code == 404
+    async with test_session_factory() as session:
+        event_count = await session.scalar(select(func.count()).select_from(WebhookEvent))
+        payment_count = await session.scalar(select(func.count()).select_from(Payment))
+        assert event_count == payment_count == 0
+
+
+@pytest.mark.asyncio
+async def test_distinct_late_webhook_cannot_overwrite_final_booking(
+    client: AsyncClient,
+    registered_user: dict[str, object],
+    catalog: dict[str, int],
+    test_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    booking = await create_booking(client, registered_user["token"], catalog)
+    first_event = {
+        "event_id": "evt_first_success_001",
+        "event_type": "payment.success",
+        "provider_payment_id": "pay_first_success_001",
+        "booking_id": booking["id"],
+        "amount": "500.00",
+    }
+    first = await client.post("/payments/webhook/", json=first_event)
+    late = await client.post("/payments/webhook/", json={
+        **first_event,
+        "event_id": "evt_late_failure_001",
+        "event_type": "payment.failed",
+        "provider_payment_id": "pay_late_failure_001",
+    })
+    assert first.status_code == late.status_code == 200
+    assert first.json()["status"] == late.json()["status"] == "processed"
+
+    async with test_session_factory() as session:
+        db_booking = await session.get(Booking, booking["id"])
+        payment_count = await session.scalar(select(func.count()).select_from(Payment))
+        event_count = await session.scalar(select(func.count()).select_from(WebhookEvent))
+        assert db_booking is not None and db_booking.status == BookingStatus.CONFIRMED
+        assert payment_count == 1
+        assert event_count == 2

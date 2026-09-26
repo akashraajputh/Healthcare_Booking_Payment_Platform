@@ -36,3 +36,12 @@ async def test_login_and_invalid_password(client: AsyncClient) -> None:
 async def test_protected_booking_requires_auth(client: AsyncClient) -> None:
     response = await client.get("/bookings/")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_openapi_uses_bearer_auth_for_json_login(client: AsyncClient) -> None:
+    response = await client.get("/openapi.json")
+    assert response.status_code == 200
+    schemes = response.json()["components"]["securitySchemes"]
+    assert schemes["HTTPBearer"]["type"] == "http"
+    assert schemes["HTTPBearer"]["scheme"] == "bearer"
