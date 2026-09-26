@@ -1,18 +1,28 @@
 # EVE Healthcare Diagnostic Booking API
 
-A focused backend for diagnostic-centre discovery, test pricing, appointment booking, and simulated payment processing. FastAPI exposes typed request/response contracts and OpenAPI documentation; PostgreSQL stores the domain model with Alembic-managed schema changes. Booking prices are always read from the centre-test offering, and payment changes are committed atomically with booking state.
+FastAPI backend for diagnostic-centre discovery, test pricing, appointment booking, and simulated payments. The service uses PostgreSQL, asynchronous SQLAlchemy 2.x, Alembic migrations, Pydantic v2 validation, Argon2 password hashing, and JWT bearer authentication.
 
-The API is intentionally small enough to follow in an interview while protecting the important boundaries: authenticated booking, admin-managed catalog data, per-user booking visibility, explicit state transitions, database uniqueness for payments and webhook event IDs, and rollback on invalid provider events.
+The client selects a diagnostic centre, test, and appointment time. The API verifies that the centre offers the test and copies the current centre-specific price into the booking. Users can only view or cancel their own bookings. Mock payment and webhook updates are atomic, and database uniqueness constraints protect against duplicate payments and repeated webhook events.
+
+## Features
+
+- Signup, login, password hashing, JWT authentication, and admin authorization.
+- Public centre and diagnostic-test discovery.
+- Admin-managed centres, tests, and centre-specific test prices.
+- User-owned bookings with server-derived price and future appointment validation.
+- Pending booking cancellation and mock successful/failed payments.
+- Idempotent payment webhooks with event uniqueness, amount verification, and safe late-event behavior.
+- Health and database-readiness endpoints.
+- Swagger documentation with sample request and response values.
 
 ## Technology
 
 - Python 3.11+
-- FastAPI and Pydantic v2 / pydantic-settings
-- PostgreSQL, SQLAlchemy 2.x async, and asyncpg
-- Alembic migrations
-- PyJWT and pwdlib Argon2 password hashing
+- FastAPI, Uvicorn, Pydantic v2, and pydantic-settings
+- PostgreSQL, SQLAlchemy 2.x async, asyncpg, and Alembic
+- PyJWT and pwdlib Argon2
 - pytest, pytest-asyncio, and httpx
-- Docker Compose and Uvicorn
+- Docker and Docker Compose
 
 ## Architecture
 
@@ -22,7 +32,7 @@ Client
   v
 FastAPI
   +--> Authentication and authorization
-  +--> Centre and test catalog
+  +--> Centre and diagnostic-test catalog
   +--> Booking service
   +--> Payment and webhook service
   |
@@ -30,24 +40,13 @@ FastAPI
 PostgreSQL
 ```
 
-The application is organized into `app/api` for HTTP and dependencies, `app/services` for business operations, `app/models` for SQLAlchemy entities, `app/schemas` for API contracts, and `app/core` for configuration, security, and database setup. Production schema setup uses Alembic; the app does not call `Base.metadata.create_all()` at startup.
+`app/api` contains routes and request dependencies, `app/services` contains business operations, `app/models` defines SQLAlchemy tables, `app/schemas` defines validated API contracts and OpenAPI examples, and `app/core` contains settings, security, and database setup. Production schema changes are applied by Alembic; the application does not call `Base.metadata.create_all()` at startup.
 
-## Setup
+## Quick Start
 
-### Docker
+### Local PostgreSQL
 
-Copy `.env.example` to `.env`, replace `JWT_SECRET_KEY` with a random secret of at least 32 characters, then run:
-
-```powershell
-Copy-Item .env.example .env
-docker compose up --build
-```
-
-Compose waits for PostgreSQL, applies `alembic upgrade head`, and starts Uvicorn on port 8000. The API docs are at `http://localhost:8000/docs`; the OpenAPI document is at `http://localhost:8000/openapi.json`.
-
-### Local
-
-Create and activate a virtual environment, then install dependencies:
+Create a PostgreSQL database, then configure a local `.env` file. Do not commit `.env`; it is ignored by Git.
 
 ```powershell
 py -3.11 -m venv .venv
@@ -56,58 +55,47 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Update `DATABASE_URL` for a local PostgreSQL instance and set a unique `JWT_SECRET_KEY`. Create the development database, then run:
+Edit `.env` for your local database. `DATABASE_URL` must use the async driver URL form:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@localhost:5432/DATABASE_NAME
+JWT_SECRET_KEY=replace-with-a-random-secret-at-least-32-characters
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+```
+
+Apply migrations, then start the API:
 
 ```powershell
-alembic upgrade head
-uvicorn app.main:app --reload
+python -m alembic upgrade head
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Generate a future migration after model changes with:
+### Docker Compose
+
+Docker Compose starts its own PostgreSQL 16 database and runs the migration before Uvicorn starts. Create `.env` for the app’s JWT settings, then run:
 
 ```powershell
-alembic revision --autogenerate -m "describe change"
-alembic upgrade head
+Copy-Item .env.example .env
 ```
 
-Run the test suite with `pytest`. Tests use a temporary SQLite database and do not require a running PostgreSQL server.
+Replace the sample JWT key with a random value, then:
 
-## Administrator Setup
-
-Signup always creates a `USER`; clients cannot choose their role. Promote a trusted account using a controlled database session after registering it:
-
-```sql
-UPDATE users SET role = 'ADMIN' WHERE email = 'admin@example.com';
+```powershell
+docker compose up --build
 ```
 
-Then log in again to receive a token and use it for centre, test, and centre-test administration. Do not expose this SQL operation through a public endpoint.
+The Compose app connects to its `db` service; its database is separate from any PostgreSQL instance configured for local Uvicorn. Compose exposes port 8000. Stop the stack with `Ctrl+C`; remove its persisted database volume only when you intentionally want to delete its data.
 
-## API Endpoints
+## Manual API Testing
 
-| Method | Endpoint | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/auth/signup` | No | Register a user |
-| POST | `/auth/login` | No | Issue a bearer JWT |
-| GET | `/centres/` | No | List active centres |
-| GET | `/centres/{centre_id}` | No | Get an active centre |
-| POST | `/centres/` | Admin | Create a centre |
-| GET | `/centres/{centre_id}/tests` | No | List tests and prices offered by a centre |
-| POST | `/centres/{centre_id}/tests/{test_id}` | Admin | Associate a test with a centre and price it |
-| GET | `/tests/` | No | List active diagnostic tests |
-| GET | `/tests/{test_id}` | No | Get an active diagnostic test |
-| POST | `/tests/` | Admin | Create a diagnostic test |
-| POST | `/bookings/` | Yes | Book an offered test at its current centre price |
-| GET | `/bookings/` | Yes | List the caller's bookings |
-| GET | `/bookings/{booking_id}` | Yes | Get an owned booking |
-| POST | `/bookings/{booking_id}/cancel` | Yes | Cancel an owned pending booking |
-| POST | `/payments/` | Yes | Simulate payment success or failure for an owned booking |
-| POST | `/payments/webhook/` | Provider | Process simulated provider event idempotently |
-| GET | `/health` | No | Liveness response |
-| GET | `/ready` | No | Check database connectivity |
+Open `http://127.0.0.1:8000/docs` while Uvicorn is running. Every request and response schema has an example in Swagger. The generated OpenAPI document is at `http://127.0.0.1:8000/openapi.json`.
 
-### Example Requests
+For endpoints requiring authentication, first call `POST /auth/signup`, then `POST /auth/login`. Copy the returned `access_token` into Swagger’s **Authorize** dialog as a bearer token. Signup creates a regular `USER`; the example administrator flow below is required before creating catalog data.
 
-Signup:
+### 1. Register and log in
+
+`POST /auth/signup`:
 
 ```json
 {
@@ -117,79 +105,191 @@ Signup:
 }
 ```
 
-Create a booking with a bearer token. Extra fields such as `amount`, `user_id`, and `status` are rejected; appointment timestamps without an offset are interpreted as UTC.
+Passwords must contain 12 to 128 characters. The response contains the user ID, email, and name, never the password or password hash. `POST /auth/login` accepts JSON with `email` and `password`, and returns `access_token` plus `token_type: "bearer"`.
+
+### 2. Promote an administrator
+
+The service intentionally has no public endpoint for granting admin roles. Register the admin user first, then promote the trusted account through the database. For Docker Compose, open a PostgreSQL prompt:
+
+```powershell
+docker compose exec db psql -U postgres -d eve_healthcare
+```
+
+Run:
+
+```sql
+UPDATE users SET role = 'ADMIN' WHERE email = 'admin@example.com';
+```
+
+For local PostgreSQL, run the same SQL using your local `psql` connection. Log in with the promoted account and use its token for catalog administration.
+
+### 3. Create the catalogue
+
+With the admin bearer token, use `POST /centres/`:
+
+```json
+{
+  "name": "Apollo Diagnostics",
+  "location": "Delhi"
+}
+```
+
+Then use `POST /tests/`:
+
+```json
+{
+  "name": "CBC",
+  "description": "Complete Blood Count"
+}
+```
+
+Associate the returned centre and test IDs using `POST /centres/{centre_id}/tests/{test_id}`:
+
+```json
+{
+  "price": 500.00
+}
+```
+
+Use `GET /centres/{centre_id}/tests` to confirm the test and centre-specific price are available. Public discovery endpoints include `GET /centres/`, `GET /centres/{centre_id}`, `GET /tests/`, and `GET /tests/{test_id}`.
+
+### 4. Create a booking and simulate payment
+
+Log in as a normal user, authorize with that token, and call `POST /bookings/`:
 
 ```json
 {
   "centre_id": 1,
-  "test_id": 2,
-  "appointment_at": "2026-10-01T10:30:00"
+  "test_id": 1,
+  "appointment_at": "2026-10-01T10:30:00Z"
 }
 ```
 
-The response contains the server-derived amount and joined centre/test names:
+The client cannot provide `user_id`, `amount`, or `status`; unexpected fields are rejected. The server gets the user from the JWT, verifies the centre/test offering, and copies its database price. Appointment times without a timezone are interpreted as UTC; appointments must be in the future.
+
+The response includes the centre and test names and starts with `status: "PENDING"`. To simulate payment for an owned booking, call `POST /payments/`:
 
 ```json
 {
-  "id": 101,
-  "centre_id": 1,
-  "centre_name": "EVE Central Lab",
-  "test_id": 2,
-  "test_name": "CBC",
-  "appointment_at": "2026-10-01T10:30:00Z",
-  "amount": "500.00",
-  "status": "PENDING",
-  "created_at": "2026-09-26T12:00:00Z"
-}
-```
-
-Mock payment request:
-
-```json
-{
-  "booking_id": 101,
+  "booking_id": 1,
   "simulate": "SUCCESS"
 }
 ```
 
-Webhook request:
+Use `"FAILED"` to simulate failure instead. The payment amount comes from the booking. The endpoint permits one payment per booking; payment success confirms the booking and payment failure marks it failed.
+
+### 5. Test payment webhooks
+
+Create a separate pending booking, then call `POST /payments/webhook/`:
 
 ```json
 {
   "event_id": "evt_123456",
   "event_type": "payment.success",
   "provider_payment_id": "pay_123",
-  "booking_id": 101,
+  "booking_id": 2,
   "amount": "500.00"
 }
 ```
 
+Supported event types are `payment.success` and `payment.failed`. Sending the same event ID again returns an idempotent response and does not create another payment. The amount must equal the booking amount. A distinct late event for a booking that already has a final status is recorded but cannot change that status or create another payment.
+
+### Health Checks
+
+- `GET /health` returns `{"status":"ok"}`.
+- `GET /ready` runs a database connectivity check and returns `{"status":"ready"}` when PostgreSQL is reachable.
+
+## API Reference
+
+| Method | Endpoint | Access | Behavior |
+| --- | --- | --- | --- |
+| POST | `/auth/signup` | Public | Register a regular user |
+| POST | `/auth/login` | Public | Validate credentials and issue a JWT |
+| GET | `/centres/` | Public | List active centres |
+| POST | `/centres/` | Admin | Create a centre |
+| GET | `/centres/{centre_id}` | Public | Retrieve an active centre |
+| GET | `/centres/{centre_id}/tests` | Public | List a centre’s active tests and prices |
+| POST | `/centres/{centre_id}/tests/{test_id}` | Admin | Associate a test with a centre and price |
+| GET | `/tests/` | Public | List active diagnostic tests |
+| POST | `/tests/` | Admin | Create a diagnostic test |
+| GET | `/tests/{test_id}` | Public | Retrieve an active diagnostic test |
+| POST | `/bookings/` | User | Create a booking at the server-derived price |
+| GET | `/bookings/` | User | List the caller’s bookings |
+| GET | `/bookings/{booking_id}` | Owner | Retrieve an owned booking |
+| POST | `/bookings/{booking_id}/cancel` | Owner | Cancel an owned pending booking |
+| POST | `/payments/` | Owner | Simulate success or failure for an owned pending booking |
+| POST | `/payments/webhook/` | Simulated provider | Process an idempotent payment event |
+| GET | `/health` | Public | Liveness check |
+| GET | `/ready` | Public | Database readiness check |
+
+Errors use FastAPI’s standard `detail` response format. Validation failures return `422`; invalid credentials return `401`; non-admin writes return `403`; missing or non-owned bookings return `404`; duplicate or invalid state operations return `409`.
+
 ## Data Model
 
-- A user has many bookings; each booking belongs to one user, centre, and diagnostic test.
-- Centres and diagnostic tests are many-to-many through `centre_tests`.
-- `centre_tests.price` is the price for that specific centre/test pair. Price is not a property of the test because different centres may charge differently.
-- A booking has at most one payment. Provider payment IDs and webhook event IDs are unique in the database.
-- Webhook events are recorded with processing status and timestamps.
+```text
+User 1 ------ N Booking N ------ 1 Centre
+                    |
+                    +------------ 1 DiagnosticTest
 
-The composite primary key on `(centre_id, test_id)` prevents duplicate offerings. The unique payment-per-booking and webhook-event constraints are final database-level defenses against concurrent duplicate processing.
+Centre N ------ M DiagnosticTest
+       through CentreTest(centre_id, test_id, price)
 
-## Authorization and State Rules
+Booking 1 ------ 0..1 Payment
 
-- Only admins can create centres, tests, or centre-test prices. New signups cannot assign themselves an admin role.
-- Booking creation requires a bearer token and an active centre/test offering. The amount is copied from the offering at booking time.
-- Booking reads and cancellation are owner-scoped. Other users receive `404` so booking existence is not disclosed.
-- Only `PENDING` bookings can be cancelled or receive a new payment outcome.
-- Payment success moves a pending booking to `CONFIRMED`; failure moves it to `FAILED`. These states are terminal in this scope.
-- The first valid webhook event for a pending booking determines its payment result. A later distinct event for an already-final booking is recorded as processed but cannot overwrite booking state or create a second payment.
-- Repeated event IDs return an idempotent success response without applying payment changes. Amount mismatches and unknown bookings are rejected, and the event insert rolls back with the transaction.
-- Mock payment operations lock the booking where supported and atomically write payment plus booking status. Webhook event insertion uses `ON CONFLICT DO NOTHING` on its unique event ID before applying changes, serializing duplicate event processing in PostgreSQL.
+WebhookEvent(event_id UNIQUE)
+```
+
+`centre_tests` owns `price` because a diagnostic test can have a different price at each centre. Its `(centre_id, test_id)` composite primary key prevents duplicate offerings. A booking stores the selected centre, test, appointment, server-derived amount, and status. A unique payment `booking_id` enforces at most one payment per booking; `provider_payment_id` and webhook `event_id` are also unique.
+
+## Authorization and State Transitions
+
+- Signup always creates `USER`; only a trusted database administrator can promote a user to `ADMIN`.
+- Admin role is checked from the user record for each protected catalog write.
+- Booking create, list, detail, cancel, and mock-payment endpoints require bearer authentication. Detail and cancellation are owner-scoped; another user receives `404` to avoid revealing booking existence.
+- Only pending bookings can be cancelled or receive a payment result.
+
+```text
+PENDING -- payment.success --> CONFIRMED
+PENDING -- payment.failed  --> FAILED
+PENDING -- owner cancel    --> CANCELLED
+```
+
+`CONFIRMED`, `FAILED`, and `CANCELLED` are terminal in this implementation. A payment/webhook operation that cannot be applied must not partially update the booking, payment, or webhook record.
+
+Webhook processing inserts the globally unique event ID with `ON CONFLICT DO NOTHING`, locks the booking where supported, validates the amount, then writes payment and booking state in one transaction. Repeated IDs do not reapply changes. A different event arriving after the booking is final is marked processed without changing the booking or adding another payment.
+
+## Migrations
+
+Apply database changes with:
+
+```powershell
+python -m alembic upgrade head
+```
+
+Create a migration after editing SQLAlchemy models with:
+
+```powershell
+python -m alembic revision --autogenerate -m "describe change"
+python -m alembic upgrade head
+```
+
+The initial revision creates the booking schema. The next revision aligns the unique email index with ORM metadata. In this workspace’s database, Alembic deliberately ignores a pre-existing unrelated `product` table so autogeneration will not propose dropping it; the table is not used or changed by this service.
+
+## Tests
+
+Run all tests with:
+
+```powershell
+python -m pytest -q
+```
+
+Tests create a temporary SQLite database and cover signup/login, admin access, catalogue operations, price-derived bookings, ownership, cancellation, payment results, duplicate payments, concurrent duplicate webhook delivery, webhook rollback on invalid bookings, amount mismatch, and late-event state protection. The integration suite does not modify the configured PostgreSQL database.
 
 ## Assumptions and Production Notes
 
-- Payment is simulated; no money moves and provider events are assumed trusted for this assignment.
-- A real deployment must authenticate webhook requests (for example, verify a provider signature) and apply rate limits; the public simulation endpoint intentionally has no provider-secret scheme.
-- Appointment availability, capacity, rescheduling, refunds, and calendar conflict prevention are outside scope.
-- Webhook event IDs are globally unique, and one payment is allowed per booking.
-- Times without a timezone are treated as UTC; production clients should send explicit offsets.
-- Structured operation logs avoid passwords and JWTs. Login failures are logged without email or credential values.
+- Payment is simulated; no real money is transferred.
+- The assignment treats webhook requests as trusted simulated provider events. A production integration must verify a provider signature and should add rate limiting.
+- Appointment availability, capacity, scheduling conflicts, rescheduling, refunds, and real payment-provider integration are outside scope.
+- Webhook event IDs are globally unique; one payment is allowed for a booking.
+- Log events avoid passwords, JWTs, and credential values.
+- Configure a strong, unique `JWT_SECRET_KEY` through environment settings. Never commit `.env`.
